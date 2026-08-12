@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Amtel Batch Activator</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <div class="icon-logo">⚡</div>
+        <div>
+          <h1>Amtel Batch Activator</h1>
+          <p class="subtitle">Bulk Search & Instant Card Activation</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div id="connectionBadge" class="badge checking">Checking connection…</div>
+        <button id="resetHeaderBtn" class="btn-icon-head" title="Reset all state & clear input" aria-label="Reset extension state">
+          🔄
+        </button>
+      </div>
+    </header>
+
+    <main class="app-main">
+      <!-- Input Section -->
+      <section class="card input-section">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="card-icon">📋</span>
+            <div>
+              <h2>1. Batch Identifiers List</h2>
+              <p class="card-subtitle">Paste MSISDNs (71xxxxxxx) or ICCIDs (89252...)</p>
+            </div>
+          </div>
+          <span id="lineCountBadge" class="pill-badge highlight">0 items</span>
+        </div>
+
+        <!-- Mode Selector Segmented Pills -->
+        <div class="mode-selector-wrapper">
+          <span class="mode-label">Search Mode:</span>
+          <div class="segmented-control" role="tablist">
+            <button type="button" class="mode-pill active" data-value="auto">
+              <span class="pill-icon">⚡</span> Auto-Detect
+            </button>
+            <button type="button" class="mode-pill" data-value="msisdn">
+              <span class="pill-icon">📱</span> MSISDN
+            </button>
+            <button type="button" class="mode-pill" data-value="iccid">
+              <span class="pill-icon">💳</span> ICCID
+            </button>
+          </div>
+          <!-- Hidden fallback select for script compatibility -->
+          <select id="searchTypeSelect" class="hidden">
+            <option value="auto">Auto-detect</option>
+            <option value="msisdn">MSISDN</option>
+            <option value="iccid">ICCID</option>
+          </select>
+        </div>
+
+        <!-- Textarea Editor Container -->
+        <div class="editor-container">
+          <div class="editor-toolbar">
+            <span class="editor-title">INPUT QUEUE</span>
+            <div class="editor-actions">
+              <button type="button" id="pasteBtn" class="btn-text">
+                <span>📋</span> Paste
+              </button>
+              <button type="button" id="sampleBtn" class="btn-text">
+                <span>✨</span> Load Sample
+              </button>
+            </div>
+          </div>
+          <textarea
+            id="batchInput"
+            class="form-textarea editor-textarea"
+            rows="6"
+            spellcheck="false"
+            placeholder="Paste numbers here (one per line or separated by commas)...&#10;&#10;Examples:&#10;716210819&#10;6210827&#10;89252637900009210819&#10;9210819"
+          ></textarea>
+        </div>
+
+        <!-- Action Bar -->
+        <div class="action-bar">
+          <button id="startBatchBtn" class="btn btn-primary btn-glow">
+            <span class="btn-icon">▶</span> Start Batch Activation
+          </button>
+          <button id="stopBatchBtn" class="btn btn-danger hidden" disabled>
+            <span class="btn-icon">⏹</span> Stop Batch
+          </button>
+          <button id="clearBtn" class="btn btn-secondary">
+            Clear
+          </button>
+        </div>
+      </section>
+
+      <!-- Progress Section -->
+      <section id="progressSection" class="card shadow-sm hidden">
+        <div class="card-header">
+          <h2>2. Batch Progress</h2>
+          <span id="progressPercent" class="progress-percent-text">0%</span>
+        </div>
+
+        <div class="progress-container">
+          <div id="progressBar" class="progress-bar-fill" style="width: 0%"></div>
+        </div>
+
+        <div class="progress-meta">
+          <span id="progressCounter">Processed 0 / 0</span>
+          <span id="currentStatusText" class="current-status">Initializing...</span>
+        </div>
+      </section>
+
+      <!-- Report & Results Dashboard -->
+      <section id="reportSection" class="card shadow-sm hidden">
+        <div class="card-header">
+          <h2>3. Execution Summary Report</h2>
+          <div class="report-export-btns">
+            <button id="copyReportBtn" class="btn btn-sm btn-secondary">📋 Copy Report</button>
+            <button id="downloadCsvBtn" class="btn btn-sm btn-secondary">📥 CSV</button>
+          </div>
+        </div>
+
+        <!-- Metrics Grid -->
+        <div class="metrics-grid">
+          <div class="metric-card metric-total">
+            <span class="metric-value" id="metricTotal">0</span>
+            <span class="metric-label">Total</span>
+          </div>
+          <div class="metric-card metric-success">
+            <span class="metric-value" id="metricActivated">0</span>
+            <span class="metric-label">Activated</span>
+          </div>
+          <div class="metric-card metric-info">
+            <span class="metric-value" id="metricAlreadyActive">0</span>
+            <span class="metric-label">Already Active</span>
+          </div>
+          <div class="metric-card metric-warning">
+            <span class="metric-value" id="metricSkipped">0</span>
+            <span class="metric-label">Skipped / Failed</span>
+          </div>
+        </div>
+
+        <!-- Report Log List -->
+        <div class="report-log-container">
+          <div class="log-filter-bar">
+            <button class="filter-tab active" data-filter="all">All (<span id="countAll">0</span>)</button>
+            <button class="filter-tab" data-filter="ACTIVATED">Activated (<span id="countActivated">0</span>)</button>
+            <button class="filter-tab" data-filter="ALREADY_ACTIVE">Active (<span id="countAlreadyActive">0</span>)</button>
+            <button class="filter-tab" data-filter="SKIPPED">Skipped (<span id="countSkipped">0</span>)</button>
+          </div>
+          <div id="reportList" class="report-list">
+            <!-- Dynamic report items populated here -->
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <span>Amtel CRM Helper — Batch Card Activator</span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
