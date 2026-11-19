@@ -1,17 +1,39 @@
 {
   "manifest_version": 3,
   "name": "Amtel Batch Subscriber Activator",
-  "description": "Bulk search and activate existing idle subscriber cards on Amtel CRM with real-time progress and summary reports.",
-  "version": "1.0.0",
+  "description": "Bulk search and activate existing idle subscriber cards exclusively on Amtel CRM (crmamtel.com).",
+  "version": "1.4.0",
   "action": {
-    "default_popup": "popup.html",
     "default_title": "Amtel Batch Activator"
   },
-  "permissions": ["activeTab", "storage", "scripting"],
-  "host_permissions": ["https://www.crmamtel.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "popup.html"
+  },
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting",
+    "sidePanel",
+    "notifications",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.crmamtel.com/*",
+    "http://www.crmamtel.com/*",
+    "https://crmamtel.com/*",
+    "http://crmamtel.com/*"
+  ],
   "content_scripts": [
     {
-      "matches": ["https://www.crmamtel.com/*"],
+      "matches": [
+        "https://www.crmamtel.com/*",
+        "http://www.crmamtel.com/*",
+        "https://crmamtel.com/*",
+        "http://crmamtel.com/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }
