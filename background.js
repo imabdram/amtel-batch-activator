@@ -219,6 +219,7 @@ async function runBatch() {
         type: item.type,
         status: "SKIPPED",
         message: item.message,
+        lastTopUp: "N/A",
         processedAt: new Date().toISOString(),
         durationMs: 0
       };
@@ -244,6 +245,7 @@ async function runBatch() {
             type: item.type,
             status: response.status,
             message: response.message || response.reason,
+            lastTopUp: response.lastTopUp || "N/A",
             processedAt: new Date().toISOString(),
             durationMs
           };
@@ -253,6 +255,7 @@ async function runBatch() {
             type: item.type,
             status: "SKIPPED",
             message: response?.error || response?.reason || "Unknown error during CRM search.",
+            lastTopUp: "N/A",
             processedAt: new Date().toISOString(),
             durationMs
           };
@@ -273,6 +276,7 @@ async function runBatch() {
           type: item.type,
           status: "SKIPPED",
           message: err.message,
+          lastTopUp: "N/A",
           processedAt: new Date().toISOString(),
           durationMs: Date.now() - itemStarted
         };

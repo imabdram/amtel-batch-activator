@@ -41,17 +41,18 @@
             class="editor-textarea"
             rows="6"
             spellcheck="false"
-            placeholder="Paste numbers or drop .csv / .xlsx file..."
+            placeholder="Paste numbers, or drop an .xlsx / .csv file (IMSI, MSISDN or ICCID column)..."
           ></textarea>
           <div class="editor-footer">
             <span id="lineCountBadge" class="count-badge">0 items</span>
             <div class="footer-actions">
-              <input type="file" id="fileInput" accept=".csv,.tsv,.txt,.xlsx" style="display:none;" />
+              <input type="file" id="fileInput" accept=".csv,.tsv,.txt,.xlsx,.xlsm" style="display:none;" />
               <button type="button" id="uploadFileBtn" class="link-btn">📁 Upload File</button>
               <button type="button" id="sampleBtn" class="link-btn">Sample</button>
             </div>
           </div>
         </div>
+        <div id="sourceStatus" class="source-status hidden" role="status" aria-live="polite"></div>
 
         <!-- Compact Options -->
         <div class="options-row">
@@ -95,7 +96,7 @@
           </div>
           <div class="export-row">
             <button id="retryFailedBtn" class="btn btn-xs btn-outline-warning hidden">Retry Failed</button>
-            <button id="downloadCsvBtn" class="btn btn-xs btn-secondary">CSV</button>
+            <button id="downloadCsvBtn" class="btn btn-xs btn-secondary">Export CSV</button>
             <button id="copyReportBtn" class="btn btn-xs btn-secondary">Copy</button>
           </div>
           <div id="reportList" class="report-list"></div>
@@ -107,6 +108,7 @@
     </footer>
 
 
+    <script src="parser.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

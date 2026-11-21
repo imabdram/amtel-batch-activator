@@ -8,281 +8,129 @@ let state = {
   results: [],
   activeFilter: "all",
   targetTabId: null,
-  statusText: "Ready"
+  statusText: "Ready",
+  // Set when the input came from an uploaded workbook/table, so switching
+  // between Auto/MSISDN/IMSI/ICCID can re-pick the matching column.
+  sheetTable: null
 };
 
 const foundStatuses = new Set(["FOUND", "ACTIVATED", "ALREADY_ACTIVE"]);
 
-// --- Helper Utilities & Normalizers ---
-function digits(value) {
-  return String(value || "").replace(/\D/g, "");
+// --- Identifier parsing helpers (shared with parser.js) ---
+const {
+  getParsedQueue,
+  parseDelimitedText,
+  extractIdentifiersFromTable,
+  parseWorkbook
+} = AmtelParser;
+
+// --- Uploaded file: status line + column-aware loading ---
+function showSourceStatus(text, kind = "") {
+  const el = $("sourceStatus");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = "source-status" + (text ? "" : " hidden") + (kind ? ` ${kind}` : "");
 }
 
-function normalizeMsisdn(value) {
-  let v = digits(value);
-  if (v.startsWith("252")) v = v.slice(3);
-  if (v.length === 7) v = `71${v}`;
-  if (!/^71\d{7}$/.test(v)) {
-    throw new Error(`Invalid MSISDN: "${value}". Must be 9 digits starting with 71, or last 7 digits.`);
-  }
-  return v;
+function describeSource(table) {
+  const count = table.values.length;
+  const typeLabel = table.type && table.type !== "auto" ? ` (${table.type})` : "";
+  const parts = [`${count} identifier${count === 1 ? "" : "s"}${typeLabel}`];
+  if (table.sourceLabel) parts.push(table.sourceLabel);
+  if (table.columnLetter) parts.push(`column ${table.columnLetter}`);
+  if (table.invalidCount > 0) parts.push(`${table.invalidCount} skipped`);
+  return parts.join(" · ");
 }
 
-function normalizeIccid(value) {
-  let iccid = digits(value);
-  if (/^\d{19,20}$/.test(iccid)) return iccid;
-  if (iccid.length === 8) return `892526379000${iccid}`;
-  if (iccid.length === 7) return `8925263790000${iccid}`;
-  throw new Error(`Invalid ICCID: "${value}". Must be full 19-20 digits, 8 digits, or 7 digits.`);
+function setSearchMode(mode, { reload = true } = {}) {
+  $("searchTypeSelect").value = mode;
+  document.querySelectorAll(".mode-pill").forEach((pill) => {
+    pill.classList.toggle("active", pill.dataset.value === mode);
+  });
+  if (reload) reloadFromLoadedSheet(mode);
 }
 
-function normalizeImsi(value) {
-  const imsi = String(value || "").trim().replace(/\.00$/, "");
-  if (!/^\d{15}$/.test(imsi)) {
-    throw new Error(`Invalid IMSI: "${value}". Must be a 15-digit IMSI.`);
+// Re-read the stored worksheet/table and pull the column that matches `mode`.
+// Returns true when the file was the source of the input (so the caller can skip
+// its own updateLineCount call).
+function reloadFromLoadedSheet(mode) {
+  if (!state.sheetTable || !state.sheetTable.rows) return false;
+
+  const extracted = extractIdentifiersFromTable(state.sheetTable.rows, mode);
+  if (!extracted.values.length) {
+    showSourceStatus(
+      `⚠️ ${extracted.reason || `No ${mode} values in this file.`} Input left unchanged.`,
+      "warn"
+    );
+    return true;
   }
-  return imsi;
+
+  $("batchInput").value = extracted.values.join("\n");
+  updateLineCount();
+  savePopupSettings();
+  showSourceStatus(
+    `✓ ${describeSource({
+      ...extracted,
+      sourceLabel: state.sheetTable.sourceLabel
+    })}`,
+    "success"
+  );
+  return true;
 }
 
-function extractIdentifierFromLine(rawLine) {
-  let line = String(rawLine || "").trim();
-  if (!line) return null;
-
-  // Handle Excel / Sheets tab-delimited paste or CSV
-  if (line.includes("\t")) {
-    const cols = line.split("\t").map((c) => c.trim()).filter(Boolean);
-    const candidate = cols.find((c) => /^\d+(\.00)?$/.test(c.replace(/\s+/g, "")));
-    line = candidate || cols[0];
-  } else if (line.includes(",") && !line.includes(" ")) {
-    const cols = line.split(",").map((c) => c.trim()).filter(Boolean);
-    const candidate = cols.find((c) => /^\d+(\.00)?$/.test(c.replace(/\s+/g, "")));
-    line = candidate || cols[0];
+function applyTableToInput(table) {
+  if ($("searchTypeSelect").value === "auto" && ["IMSI", "MSISDN", "ICCID"].includes(table.type)) {
+    setSearchMode(table.type, { reload: false });
   }
-  return line.trim();
+
+  $("batchInput").value = table.values.join("\n");
+  state.sheetTable = {
+    rows: table.rows,
+    sourceLabel: table.sourceLabel || ""
+  };
+  updateLineCount();
+  savePopupSettings();
+  showSourceStatus(`✓ ${describeSource(table)}`, "success");
 }
 
-function parseInputItem(rawLine, searchMode) {
-  const trimmed = extractIdentifierFromLine(rawLine);
-  if (!trimmed) return null;
-
-  let type = searchMode;
-  if (searchMode === "auto") {
-    const rawDigits = digits(trimmed);
-    if (
-      rawDigits.startsWith("89") ||
-      rawDigits.length >= 19 ||
-      rawDigits.length === 8 ||
-      (rawDigits.length === 7 && rawDigits.startsWith("9"))
-    ) {
-      type = "ICCID";
-    } else if (/^\d{15}(?:\.00)?$/.test(trimmed)) {
-      type = "IMSI";
-    } else {
-      type = "MSISDN";
-    }
-  }
-
-  try {
-    let value;
-    if (type === "ICCID") value = normalizeIccid(trimmed);
-    else if (type === "MSISDN") value = normalizeMsisdn(trimmed);
-    else if (type === "IMSI") value = normalizeImsi(trimmed);
-    else value = trimmed.replace(/\.00$/, "").trim();
-    return { raw: trimmed, value, type, status: "PENDING" };
-  } catch (err) {
-    return { raw: trimmed, value: trimmed, type, status: "SKIPPED", message: err.message };
-  }
-}
-
-function getParsedQueue(rawText, searchMode, deduplicate = true) {
-  const lines = rawText.split(/[\r\n,;]+/).map((l) => l.trim()).filter(Boolean);
-  const seen = new Set();
-  const queue = [];
-
-  for (const rawLine of lines) {
-    const item = parseInputItem(rawLine, searchMode);
-    if (!item) continue;
-
-    if (deduplicate) {
-      const key = `${item.type}:${item.value}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-    }
-    queue.push(item);
-  }
-  return queue;
-}
-
-// --- Native Pure JS XLSX Decompressor (Zero External Dependencies) ---
-async function parseXlsxBuffer(arrayBuffer) {
-  const bytes = new Uint8Array(arrayBuffer);
-  const files = {};
-  let offset = 0;
-
-  while (offset + 30 <= bytes.length) {
-    // Check local file header signature 0x04034b50 (PK\x03\x04)
-    if (bytes[offset] !== 0x50 || bytes[offset + 1] !== 0x4b || bytes[offset + 2] !== 0x03 || bytes[offset + 3] !== 0x04) {
-      offset++;
-      continue;
-    }
-
-    const view = new DataView(bytes.buffer, bytes.byteOffset + offset, 30);
-    const method = view.getUint16(8, true);
-    const compressedSize = view.getUint32(18, true);
-    const fileNameLen = view.getUint16(26, true);
-    const extraLen = view.getUint16(28, true);
-
-    const nameStart = offset + 30;
-    const nameBytes = bytes.slice(nameStart, nameStart + fileNameLen);
-    const fileName = new TextDecoder().decode(nameBytes);
-
-    const dataStart = nameStart + fileNameLen + extraLen;
-    const dataEnd = dataStart + compressedSize;
-
-    if (fileName.includes("sheet1.xml") || fileName.includes("sharedStrings.xml")) {
-      const compressedData = bytes.slice(dataStart, dataEnd);
-      let content = "";
-      if (method === 8) {
-        // Deflated with method 8
-        const ds = new DecompressionStream("deflate-raw");
-        const writer = ds.writable.getWriter();
-        writer.write(compressedData);
-        writer.close();
-        const reader = ds.readable.getReader();
-        const chunks = [];
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-        }
-        const totalLen = chunks.reduce((acc, c) => acc + c.length, 0);
-        const merged = new Uint8Array(totalLen);
-        let pos = 0;
-        for (const chunk of chunks) {
-          merged.set(chunk, pos);
-          pos += chunk.length;
-        }
-        content = new TextDecoder().decode(merged);
-      } else if (method === 0) {
-        // Stored / uncompressed
-        content = new TextDecoder().decode(compressedData);
-      }
-      files[fileName] = content;
-    }
-
-    offset = dataEnd;
-  }
-
-  // Parse shared strings table if present
-  const sharedStrings = [];
-  const sstKey = Object.keys(files).find((k) => k.includes("sharedStrings.xml"));
-  if (sstKey && files[sstKey]) {
-    const sstMatches = files[sstKey].matchAll(/<si>(.*?)<\/si>/gs);
-    for (const match of sstMatches) {
-      const textMatches = [...match[1].matchAll(/<t[^>]*>(.*?)<\/t>/gs)].map((m) => m[1]).join("");
-      sharedStrings.push(textMatches);
-    }
-  }
-
-  // Parse sheet1.xml cells in column A
-  const sheetKey = Object.keys(files).find((k) => k.includes("sheet1.xml"));
-  const identifiers = [];
-  if (sheetKey && files[sheetKey]) {
-    const cellMatches = files[sheetKey].matchAll(/<c\s+r="A(\d+)"([^>]*)>(.*?)<\/c>/gs);
-    for (const match of cellMatches) {
-      const attrs = match[2];
-      const body = match[3];
-      const valMatch = body.match(/<v>(.*?)<\/v>/);
-      if (!valMatch) continue;
-
-      let val = valMatch[1].trim();
-      const isString = /t="s"/i.test(attrs);
-      if (isString) {
-        const idx = parseInt(val, 10);
-        val = sharedStrings[idx] !== undefined ? sharedStrings[idx] : val;
-      }
-
-      val = String(val).replace(/\.00$/, "").trim();
-      if (!val || /^(imsi|msisdn|number|id|subscriber|card)$/i.test(val)) continue;
-      identifiers.push(val);
-    }
-  }
-
-  return identifiers;
-}
-
-// --- CSV / TSV / TXT Parser ---
-function parseTextFile(rawContent) {
-  const lines = rawContent.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  const identifiers = [];
-
-  for (const line of lines) {
-    let col = line;
-    if (line.includes("\t")) {
-      col = line.split("\t")[0];
-    } else if (line.includes(",")) {
-      col = line.split(",")[0];
-    } else if (line.includes(";")) {
-      col = line.split(";")[0];
-    }
-
-    col = col.replace(/^["']|["']$/g, "").trim();
-    col = col.replace(/\.00$/, "").trim();
-
-    if (!col || /^(imsi|msisdn|number|id|subscriber|card)$/i.test(col)) continue;
-    identifiers.push(col);
-  }
-
-  return identifiers;
-}
-
-// --- Universal File Handler (.csv, .xlsx, .tsv, .txt) ---
+// --- Universal file handler (.xlsx, .xlsm, .csv, .tsv, .txt) ---
 async function handleUploadedFile(file) {
   if (!file) return;
-  const fileName = file.name.toLowerCase();
-  const titleEl = $("editorStatusTitle");
-  titleEl.textContent = `LOADING ${file.name.toUpperCase()}...`;
+
+  const fileName = file.name || "file";
+  const dotIndex = fileName.lastIndexOf(".");
+  const ext = (dotIndex >= 0 ? fileName.slice(dotIndex + 1) : "").toLowerCase();
+  const mode = $("searchTypeSelect").value;
+
+  showSourceStatus(`Loading ${fileName}…`);
 
   try {
-    let items = [];
-    if (fileName.endsWith(".xlsx")) {
-      const buffer = await file.arrayBuffer();
-      items = await parseXlsxBuffer(buffer);
+    let table;
+
+    if (ext === "xlsx" || ext === "xlsm") {
+      // Multi-column CRM exports: header row (IMSI / MSISDN / ICCID) is detected,
+      // then the column matching the selected mode is loaded.
+      table = await parseWorkbook(await file.arrayBuffer(), mode);
+      table.sourceLabel = `sheet "${table.sheetName}"`;
+    } else if (ext === "csv" || ext === "tsv" || ext === "txt") {
+      const rows = parseDelimitedText(await file.text());
+      table = { ...extractIdentifiersFromTable(rows, mode), sourceLabel: `file "${fileName}"` };
     } else {
-      const text = await file.text();
-      items = parseTextFile(text);
+      throw new Error(
+        `Unsupported file type${ext ? ` ".${ext}"` : ""}. Use .xlsx, .xlsm, .csv, .tsv or .txt.`
+      );
     }
 
-    if (items.length === 0) {
-      alert(`No valid identifiers could be found in column 1 of "${file.name}".`);
-      titleEl.textContent = "INPUT";
-      return;
+    if (!table.values || table.values.length === 0) {
+      throw new Error(table.reason || `No valid IMSI, MSISDN or ICCID values were found in "${fileName}".`);
     }
 
-    $("batchInput").value = items.join("\n");
-
-    // Auto-select IMSI mode if items look like 15-digit IMSIs (e.g. starting with 6379)
-    const isImsiSample = items.slice(0, 5).some((i) => /^\d{15}$/.test(i));
-    if (isImsiSample) {
-      $("searchTypeSelect").value = "IMSI";
-      document.querySelectorAll(".mode-pill").forEach((pill) => {
-        pill.classList.toggle("active", pill.dataset.value === "IMSI");
-      });
-    }
-
-    updateLineCount();
-    savePopupSettings();
-
-    titleEl.textContent = `✓ LOADED ${items.length} ITEMS`;
-    titleEl.classList.add("success-highlight");
-    setTimeout(() => {
-      titleEl.textContent = "INPUT";
-      titleEl.classList.remove("success-highlight");
-    }, 3500);
+    applyTableToInput(table);
   } catch (err) {
     console.error("File processing error:", err);
-    alert(`Could not parse file: ${err.message}`);
-    titleEl.textContent = "INPUT";
+    state.sheetTable = null;
+    showSourceStatus(`⚠️ ${err.message}`, "error");
+    alert(`Could not load "${fileName}":\n\n${err.message}`);
   }
 }
 
@@ -466,6 +314,13 @@ function renderUI() {
   renderReportList();
 }
 
+function escapeHtml(value) {
+  return String(value === null || value === undefined ? "" : value).replace(
+    /[&<>"']/g,
+    (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch])
+  );
+}
+
 function renderReportList() {
   const listEl = $("reportList");
   listEl.innerHTML = "";
@@ -490,13 +345,20 @@ function renderReportList() {
     const badgeClass = item.status.toLowerCase();
     const badgeText = item.status === "ALREADY_ACTIVE" ? "ACTIVE" : item.status;
     const duration = item.durationMs ? ` • ${item.durationMs}ms` : "";
+    const lastTopUp = item.lastTopUp || "N/A";
+    const topUpClass = lastTopUp === "N/A" ? "na" : "amount";
 
+    // Last Top-up sits immediately before the status badge, so the operator sees
+    // the amount next to ACTIVE before moving on.
     row.innerHTML = `
-      <div>
-        <div class="item-identifier">${item.value} <span style="font-size:10px; color:#64748b;">(${item.type}${duration})</span></div>
-        <div class="item-detail">${item.message || "Processed"}</div>
+      <div class="item-main">
+        <div class="item-identifier">${escapeHtml(item.value)} <span style="font-size:10px; color:#64748b;">(${escapeHtml(item.type)}${duration})</span></div>
+        <div class="item-detail">${escapeHtml(item.message || "Processed")}</div>
       </div>
-      <span class="item-badge ${badgeClass}">${badgeText}</span>
+      <div class="item-side">
+        <span class="topup-pill ${topUpClass}" title="Last Top-up Amount">${escapeHtml(lastTopUp)}</span>
+        <span class="item-badge ${badgeClass}">${badgeText}</span>
+      </div>
     `;
     listEl.appendChild(row);
   });
@@ -600,7 +462,8 @@ function copyReportToClipboard() {
 
   state.results.forEach((r, idx) => {
     const dur = r.durationMs ? ` (${r.durationMs}ms)` : "";
-    reportText += `${idx + 1}. [${r.status}] ${r.type}: ${r.value} — ${r.message}${dur}\n`;
+    const topUp = r.lastTopUp || "N/A";
+    reportText += `${idx + 1}. ${r.type}: ${r.value} | Last Top-up: ${topUp} | [${r.status}] ${r.message}${dur}\n`;
   });
 
   navigator.clipboard.writeText(reportText).then(() => {
@@ -613,14 +476,17 @@ function copyReportToClipboard() {
 
 function downloadCsvReport() {
   if (state.results.length === 0) return;
-  let csv = "Index,Identifier,Type,Status,Message,Processed_At,Duration_ms\n";
+  // Last_Topup deliberately sits before Status so the amount lines up next to
+  // the ACTIVE column in the CSV as well.
+  let csv = "Index,Identifier,Type,Last_Topup,Status,Message,Processed_At,Duration_ms\n";
   state.results.forEach((r, idx) => {
     const safeMsg = `"${(r.message || "").replace(/"/g, '""')}"`;
     const safeType = `"${r.type || ""}"`;
     const safeVal = `"${r.value || ""}"`;
+    const safeTopUp = `"${(r.lastTopUp || "N/A").replace(/"/g, '""')}"`;
     const time = r.processedAt || "";
     const dur = r.durationMs || 0;
-    csv += `${idx + 1},${safeVal},${safeType},"${r.status}",${safeMsg},"${time}",${dur}\n`;
+    csv += `${idx + 1},${safeVal},${safeType},${safeTopUp},"${r.status}",${safeMsg},"${time}",${dur}\n`;
   });
 
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -663,7 +529,7 @@ document.querySelectorAll(".mode-pill").forEach((pill) => {
     document.querySelectorAll(".mode-pill").forEach((p) => p.classList.remove("active"));
     pill.classList.add("active");
     $("searchTypeSelect").value = pill.dataset.value;
-    updateLineCount();
+    if (!reloadFromLoadedSheet(pill.dataset.value)) updateLineCount();
     savePopupSettings();
   });
 });
@@ -672,11 +538,14 @@ $("searchTypeSelect").addEventListener("change", (e) => {
   document.querySelectorAll(".mode-pill").forEach((pill) => {
     pill.classList.toggle("active", pill.dataset.value === e.target.value);
   });
-  updateLineCount();
+  if (!reloadFromLoadedSheet(e.target.value)) updateLineCount();
   savePopupSettings();
 });
 
 $("batchInput").addEventListener("input", () => {
+  // A manual edit detaches the input from the uploaded file's columns.
+  state.sheetTable = null;
+  showSourceStatus("");
   updateLineCount();
   savePopupSettings();
 });
@@ -697,9 +566,10 @@ const editorContainer = $("editorContainer");
 if (uploadFileBtn && fileInput) {
   uploadFileBtn.addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", (e) => {
-    if (e.target.files && e.target.files.length > 0) {
-      handleUploadedFile(e.target.files[0]);
-    }
+    const file = e.target.files && e.target.files[0];
+    // Reset so selecting the same file again still fires a change event.
+    e.target.value = "";
+    if (file) handleUploadedFile(file);
   });
 }
 
@@ -726,7 +596,9 @@ const sampleBtn = $("sampleBtn");
 if (sampleBtn) {
   sampleBtn.addEventListener("click", () => {
     const samples = ["637900001057585", "716210819", "89252637900009210819"].join("\n");
+    state.sheetTable = null;
     $("batchInput").value = samples;
+    showSourceStatus("✓ 3 sample identifiers loaded (IMSI · MSISDN · ICCID)", "success");
     updateLineCount();
     savePopupSettings();
   });
@@ -776,7 +648,9 @@ $("stopBatchBtn").addEventListener("click", async () => {
 
 $("clearBtn").addEventListener("click", async () => {
   if (state.isRunning) return;
+  state.sheetTable = null;
   $("batchInput").value = "";
+  showSourceStatus("");
   updateLineCount();
   $("progressSection").classList.add("hidden");
   $("reportSection").classList.add("hidden");
@@ -802,6 +676,8 @@ if (resetHeaderBtn) {
       if (!confirmReset) return;
     }
     $("batchInput").value = "";
+    state.sheetTable = null;
+    showSourceStatus("");
     updateLineCount();
     $("progressSection").classList.add("hidden");
     $("reportSection").classList.add("hidden");

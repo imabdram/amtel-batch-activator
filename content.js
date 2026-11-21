@@ -164,6 +164,67 @@
     return text(container || document.body);
   }
 
+  // --- Last Top-up Amount (subscriber summary card) ---
+  // The CRM renders: <p>Last Top-up Amount</p><h6> NA </h6> (or "$5.00").
+  const TOPUP_LABEL_RE = /^last\s*top[\s-]*up(?:\s*amount)?$/i;
+
+  function cleanTopUpValue(raw) {
+    const value = String(raw || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!value || /^(n\/?a|na|none|null|nil|undefined|unknown|-{1,2}|—|–)$/i.test(value)) return "N/A";
+    return value;
+  }
+
+  function findTopUpLabel() {
+    // Deliberately excludes wrappers (div) so an ancestor's combined text
+    // ("Last Top-up Amount $5.00") can never match as a label.
+    for (const el of document.querySelectorAll("p, span, label, h6, small, strong")) {
+      if (!visible(el)) continue;
+      if (TOPUP_LABEL_RE.test(text(el).replace(/\s+/g, " "))) return el;
+    }
+    return null;
+  }
+
+  function readLastTopUpOnce() {
+    const label = findTopUpLabel();
+    if (!label) return null; // Card is not on this screen.
+
+    let value = "";
+    const next = label.nextElementSibling;
+    if (next && visible(next)) value = text(next);
+
+    if (!value) {
+      const column = label.closest(".col-12, .col, [class*='col-']") || label.parentElement;
+      const heading = column?.querySelector("h6");
+      if (heading) value = text(heading);
+    }
+
+    if (!value) {
+      const card = label.closest(".card, .cardContentBody, .row");
+      const fallback = card
+        ? [...card.querySelectorAll("h6, strong, .amount, .value")].find(
+            (node) => node !== label && visible(node) && text(node)
+          )
+        : null;
+      if (fallback) value = text(fallback);
+    }
+
+    return cleanTopUpValue(value);
+  }
+
+  async function readLastTopUp() {
+    const first = readLastTopUpOnce();
+    if (first && first !== "N/A") return first;
+
+    // Angular sometimes paints the amount just after the summary text.
+    await sleep(250);
+    const second = readLastTopUpOnce();
+    if (second && second !== "N/A") return second;
+    return first || second || "N/A";
+  }
+
   // --- Core Single Card Processing Logic ---
   async function processCard(item) {
     showRunStatus(`Searching ${item.type}: ${item.value}...`);
@@ -219,11 +280,14 @@
       if (!outcome.found) {
         await closeVisibleModal();
         showRunStatus(`Card ${item.value} not found in CRM. Skipping...`, "error");
-        return { ok: true, status: "NOT_FOUND", reason: "Subscriber record not found in CRM" };
+        return { ok: true, status: "NOT_FOUND", reason: "Subscriber record not found in CRM", lastTopUp: "N/A" };
       }
 
       // Card was found! Inspect page for Activation control
       await sleep(350);
+
+      // Read the summary card before activating: activation may refresh the page.
+      const lastTopUp = await readLastTopUp();
 
       const activateIcon = [...document.querySelectorAll('span.material-icons[title="Activate Subscriber"]')].find(
         (n) => visible(n) && text(n) === "check_circle"
@@ -268,14 +332,24 @@
 
         if (/success|activated|completed/i.test(modalMsg)) {
           showRunStatus(`Card ${item.value} activated successfully!`, "success");
-          return { ok: true, status: "ACTIVATED", message: "Activated successfully" };
+          return { ok: true, status: "ACTIVATED", message: "Activated successfully", lastTopUp };
         } else {
           showRunStatus(`Activation returned: ${modalMsg.slice(0, 50)}`, "error");
-          return { ok: true, status: "SKIPPED", reason: `Activation message: ${modalMsg.slice(0, 100)}` };
+          return {
+            ok: true,
+            status: "SKIPPED",
+            reason: `Activation message: ${modalMsg.slice(0, 100)}`,
+            lastTopUp
+          };
         }
       } else {
-        showRunStatus(`Card ${item.value} is already active. Skipping...`, "success");
-        return { ok: true, status: "ALREADY_ACTIVE", message: "Subscriber is already active" };
+        showRunStatus(`Card ${item.value} is already active (Last top-up: ${lastTopUp}). Skipping...`, "success");
+        return {
+          ok: true,
+          status: "ALREADY_ACTIVE",
+          message: "Subscriber is already active",
+          lastTopUp
+        };
       }
     } catch (err) {
       if (err.message && err.message.includes("SESSION_EXPIRED")) {
@@ -284,7 +358,7 @@
       }
       await closeVisibleModal();
       showRunStatus(`Skipped ${item.value}: ${err.message}`, "error");
-      return { ok: true, status: "SKIPPED", reason: err.message };
+      return { ok: true, status: "SKIPPED", reason: err.message, lastTopUp: "N/A" };
     }
   }
 
